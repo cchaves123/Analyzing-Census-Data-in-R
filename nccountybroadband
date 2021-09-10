@@ -1,0 +1,108 @@
+#download necessary libraries
+library(tidycensus)
+library(tigris)
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+
+#this file pulls broadband access data from the five year acs at the county level
+#it then analyzes counties in groups of rural and urban/suburban
+
+#initialize censys api census api key
+
+census_api_key("75f52d3b758a87f10dd951ce2f1cc1b65884b8ae")
+
+#load variable database
+v5 <- load_variables(2019, "acs5", cache = FALSE)
+
+#filtering for the variables under table B28005, which contains broadband data
+broadband_vars_age <- filter(v5, str_detect(name, "B28005")) 
+broadband_vars_age <- broadband_vars_age$name
+
+#renaming the variables in broadband_vars_age
+names(broadband_vars_age) <- c("total", paste(
+  c("total", "has_comp", "has_comp_dial_up", 
+    "has_comp_broadband", "has_comp_no_int",  
+    "no_comp"), 
+  rep(c("u18", "18_64", "65up"), each = 6), 
+  sep = "_"))
+
+#pulls acs data using the broadband_vars_age vector
+nc_broadband_county <- get_acs(geography = "county", 
+                               variables = broadband_vars_age, 
+                               year = 2019,
+                               state = "NC") %>%
+  select(-moe) %>%
+  pivot_wider(names_from = variable, values_from = estimate)
+
+#adds total number of respondents with broadband in household
+#subtracts from total respondents to find the number of respondents without broadband
+#calculates percent lacking broadband
+nc_broadband_county <- nc_broadband_county %>%
+  mutate(total_broadband = has_comp_broadband_u18 + has_comp_broadband_18_64 + has_comp_broadband_65up,
+         total_no_broadband = total - total_broadband,
+         pct = total_no_broadband / total)
+
+#multiplying percent by 100
+nc_broadband_county <- nc_broadband_county %>%
+  mutate(pct  = 100 * (total_no_broadband / total))
+#summing the total population lacking broadband
+nc_broadband_total <- nc_broadband_county %>%
+  summarize(sum(total_no_broadband))
+
+#creates a vector that contains the urban/suburban counties in NC
+urban_suburban <- c("Buncombe County, North Carolina", "Henderson County, North Carolina",
+                    "Catawba County, North Carolina", "Lincoln County, North Carolina", 
+                    "Gaston County, North Carolina", "Mecklenburg County, North Carolina",
+                    "Union County, North Carolina", "Alamance County, North Carolina", "Wake County, North Carolina",
+                    "Cabarrus County, North Carolina", "Iredell County, North Carolina",
+                    "Rowan County, North Carolina",
+                    "Davidson County, North Carolina", "Forsyth County, North Carolina",
+                    "Guilford County, North Carolina",
+                    "Orange County, North Carolina", "Durham County, North Carolina", 
+                    "Cumberland County, North Carolina",
+                    "Pitt County, North Carolina", "New Hanover County, North Carolina")
+
+#creates a vector containing the urban counties in nc
+urban <- c("Mecklenburg County, North Carolina", "Forsyth County, North Carolina",
+           "Guilford County, North Carolina", "Durham County, North Carolina",
+           "Wake County, North Carolina", "New Hanover County, North Carolina")
+
+#this section performs different calulations on the urban, urban/suburban, and rural subgroups
+#it calculates both the total number of people lacking broadband in each group
+#and the percent of people lacking broadband in each group
+nc_broadband_rural <- nc_broadband_access %>%
+  filter(!NAME %in% urban_suburban)
+nc_broadband_rural_total <- nc_broadband_rural %>%
+  summarize(sum(estimate))
+nc_broadband_rural_average <- nc_broadband_rural %>%
+  summarize(average = sum(estimate) / sum(summary_est))
+nc_broadband_urban <- nc_broadband_access %>%
+  filter(NAME %in% urban)
+nc_broadband_urban_total <- nc_broadband_urban %>%
+  summarize(sum(estimate))
+nc_broadband_urban_suburban <- nc_broadband_access %>%
+  filter(NAME %in% urban_suburban)
+nc_broadband_urban_suburban_total <- nc_broadband_urban_suburban %>%
+  summarize(sum(estimate))
+nc_broadband_urban_suburban_average <- nc_broadband_urban_suburban %>%
+  summarize(average = sum(estimate) / sum(summary_est))
+
+
+#this creates some basic plots of the above data
+plot(nc_broadband_access["pct"])
+
+#for example, this one makes a colored map of NC counties, with color varying with broadband access for that county
+ggplot(nc_broadband_access, aes(fill = pct)) + geom_sf() +
+  scale_fill_viridis_c() + scale_color_viridis_c() +
+  theme(axis.ticks.y = element_blank(),axis.text.y = element_blank(),
+        axis.ticks.x = element_blank(),axis.text.x = element_blank(),
+        plot.title = element_text(lineheight=.8, face="bold", vjust=1)) +
+  labs(fill = "Percent\nlacking broadband")
+
+plot(nc_broadband_access["estimate"])
+ggplot(nc_broadband_access, aes(fill = estimate, color = estimate)) + geom_sf() +
+  scale_fill_viridis_c() + scale_color_viridis_c()
+
+
+
