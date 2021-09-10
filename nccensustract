@@ -1,0 +1,164 @@
+#download necessary libraries
+library(tidycensus)
+library(tigris)
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+library(sf)
+
+#load census api key
+census_api_key("75f52d3b758a87f10dd951ce2f1cc1b65884b8ae")
+
+#loads all acs variables
+v5 <- load_variables(2019, "acs5", cache = FALSE)
+
+# --- broadband access ---
+
+#filtering for the variables under table B28005, which contains broadband data
+broadband_vars_age <- filter(v5, str_detect(name, "B28005")) 
+broadband_vars_age <- broadband_vars_age$name
+
+#renaming the variables in broadband_vars_age
+names(broadband_vars_age) <- c("total", paste(
+  c("total", "has_comp", "has_comp_dial_up", 
+    "has_comp_broadband", "has_comp_no_int",  
+    "no_comp"), 
+  rep(c("u18", "18_64", "65up"), each = 6), 
+  sep = "_"))
+
+
+#pulls broadband data by census tract
+broadband_tract <- get_acs(geography = "tract",
+                           variables = broadband_vars_age,
+                           state = "NC") %>%
+  select(-moe) %>%
+  pivot_wider(names_from = variable, values_from = estimate)
+
+#adds total number of respondents with broadband in household
+#subtracts from total respondents to find the number of respondents without broadband
+#calculates percent lacking broadband
+broadband_tract <- broadband_tract %>%
+  mutate(total_broadband = has_comp_broadband_u18 + has_comp_broadband_18_64 + has_comp_broadband_65up,
+         total_no_broadband = total - total_broadband,
+         pct_no_broadband = total_no_broadband / total)
+
+
+# --- median income ---
+
+#pulls median income by census tract
+income_tract <- get_acs(geography = "tract", variables = "B19013_001", state = "NC") %>%
+  rename(
+    median_household_income = estimate
+  ) %>%
+  select(-variable)
+
+# --- racial makeup ---
+
+#creates a vector for race variables
+race_vars <- c(white = "B02001_002", black = "B02001_003",
+               hispanic = "B03003_003",
+               american_indian = "B02001_004", asian = "B02001_005",
+               pacific_islander = "B02001_006", other = "B02001_007",
+               two_or_more = "B02001_008")
+#pulls race data for each census tract
+#calculates percentages for each race
+race_tract <- get_acs(geography = "tract", variables = race_vars, state = "NC",
+                      summary_var = "B02001_001", output="wide") %>%
+   mutate(
+     white_pct = whiteE / summary_est,
+     black_pct = blackE / summary_est,
+     hispanic_pct = hispanicE / summary_est,
+     american_indian_pct = american_indianE / summary_est,
+     asian_pct = asianE / summary_est,
+     pacific_islander_pct = pacific_islanderE / summary_est,
+     other_pct = otherE / summary_est,
+     two_or_more_pct = two_or_moreE / summary_est
+   ) %>%
+  relocate(summary_est, summary_moe, .after = NAME)
+
+# --- urban/rural classification ---
+#pulls data for RUCA codes and land area
+#https://www.ers.usda.gov/data-products/rural-urban-commuting-area-codes.aspx
+#I downloaded the 2010 data set, filtered for NC, and copy-pasted the data...
+#in a new sheet with the second line now as the top line
+#I deleted extraneous information from the end of the column names in excel
+ruca_data <- read.csv("ruca data.csv") %>%
+  select(Primary.RUCA.Code, Land.Area..square.miles.)
+#pulls data for number of housing units
+housingunits_tract <- get_acs(geography = "tract", table = "B25001", state = "NC") %>%
+  rename(
+    housing_units = estimate
+  ) %>%
+  select(-variable, -moe)
+#calculates the urban/rural classification based on HAC's definitions
+#http://www.ruraldataportal.org/geoterms.aspx
+tract_designation <- cbind(housingunits_tract, ruca_data) %>%
+  mutate(
+    hu_per_sqmi = housing_units / Land.Area..square.miles.
+  ) %>%
+  mutate(classification = case_when(
+    hu_per_sqmi < 16 | housing_units == 0 ~ "1 - rural",
+    16 <= hu_per_sqmi & hu_per_sqmi <= 64 & Primary.RUCA.Code >= 4 ~ "2 - small town",
+    16 <= hu_per_sqmi & hu_per_sqmi <= 64 & Primary.RUCA.Code <= 4 ~ "3 - exurban",
+    hu_per_sqmi > 64 & hu_per_sqmi <= 640 ~ "4 - outer suburban",
+    hu_per_sqmi > 640 & hu_per_sqmi <= 1600 ~ "5 - inner suburban",
+    hu_per_sqmi > 1600 ~ "6 - urban"
+  )) %>%
+  mutate(designation = case_when(
+    classification == "1 - rural" | classification == "2 - small town" ~ "rural",
+    classification == "3 - exurban" | classification == "4 - outer suburban"
+    | classification == "5 - inner suburban" ~ "suburban",
+    classification == "6 - urban" ~ "urban"
+  ))
+
+
+#this section pares down the broadband  and race data, then joins the four dataframes into one
+broadband_tract_selected <- broadband_tract %>%
+  select(GEOID, NAME, total, total_broadband, total_no_broadband, pct_no_broadband)
+race_tract_selected <- race_tract %>%
+  select(GEOID, NAME, summary_est, summary_moe, contains("pct"))
+
+first_join <- left_join(broadband_tract_selected, income_tract, 
+                        by = NULL, copy = FALSE)
+second_join <- left_join(first_join, race_tract_selected,
+                        by = NULL, copy = FALSE)
+nc_census_tract_data <- left_join(second_join, tract_designation,
+                                  by = NULL, copy = FALSE) %>%
+  relocate(summary_est, summary_moe, .after = NAME) %>%
+  rename(
+    total_pop = summary_est,
+    total_population_moe = summary_moe,
+    pop_in_households = total
+  )
+
+#writes the dataframes into csv files
+write.csv(race_tract, "race_tract.csv")
+write.csv(broadband_tract, "broadband_tract.csv")
+write.csv(income_tract, "income_tract.csv")
+write.csv(tract_designation, "tract_designation.csv")
+write.csv(nc_census_tract_data, "nc_census_tract_data.csv")
+
+#this section is an example of an analysis of Durham County by census tract
+#the plots have not been refined
+#it pulls both broadband and income for Durham county, as well as sf geometry
+#it plots maps based on broadband and income
+#it also makes a scatterplot between income and broadband access
+#it perfoms a correlation test which finds that broadband and income are significantly correlated
+durham_broadband <- broadband_tract %>%
+  filter(str_detect(NAME, "Durham")) %>%
+  select(NAME, pct_no_broadband)
+
+durham_income <- get_acs(geography = "tract",
+                         variables = c(hhincome = "B19013_001"),
+                         state = "NC", county = "Durham",
+                         geometry = TRUE)
+durham_broadband_income <- merge(durham_broadband, durham_income, by = "NAME", all.x = TRUE)
+durham_broadband_income <- st_as_sf(durham_broadband_income)
+
+ggplot(durham_broadband_income, aes(fill = pct_no_broadband, color = pct_no_broadband)) + geom_sf()
+
+plot(durham_broadband_income["pct_no_broadband"])
+plot(durham_broadband_income["estimate"])
+ggplot(data = durham_broadband_income, aes(x = estimate, y = pct_no_broadband)) + geom_point()
+cor <- cor.test(durham_broadband_income$estimate, durham_broadband_income$pct_no_broadband, method = "pearson")
+
