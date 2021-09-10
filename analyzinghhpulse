@@ -1,0 +1,207 @@
+#download necessary libraries
+library(tidyverse)
+library(srvyr)
+
+#this code draws from weeks 28-33 of the Household Pulse Survey, or Phase 3.1
+#if using data from a different phase, small edits will likely need to be made
+#for example, the order of the variables for reasons for not working will probably be different
+
+#because this code draws from six installations of survey data, the final results and their errors must be divided by 6
+#this will give the same result as a 6-week average
+#note that dividing the errors by 6 does not seem to give the exact answer, but it is very close
+
+#reads the csv file containing all responses from each installent
+#uses rbind to connect them vertically
+
+pulse_28 <- read.csv("pulse2021_puf_28.csv")
+pulse_29 <- read.csv("pulse2021_puf_29.csv")
+pulse_30 <- read.csv("pulse2021_puf_30.csv")
+pulse_31 <- read.csv("pulse2021_puf_31.csv")
+pulse_32 <- read.csv("pulse2021_puf_32.csv")
+pulse_33 <- read.csv("pulse2021_puf_33.csv")
+
+merged <- rbind(pulse_28, pulse_29, pulse_30, pulse_31, pulse_32, pulse_33)
+
+#reads the csv file containing all response weights from each installent
+#uses rbind to connect them vertically
+
+pulse_28_weights <- read.csv("pulse2021_repwgt_puf_28.csv")
+pulse_29_weights <- read.csv("pulse2021_repwgt_puf_29.csv")
+pulse_30_weights <- read.csv("pulse2021_repwgt_puf_30.csv")
+pulse_31_weights <- read.csv("pulse2021_repwgt_puf_31.csv")
+pulse_32_weights <- read.csv("pulse2021_repwgt_puf_32.csv")
+pulse_33_weights <- read.csv("pulse2021_repwgt_puf_33.csv")
+
+merged_weights <- rbind(pulse_28_weights, pulse_29_weights, pulse_30_weights, pulse_31_weights, pulse_32_weights,
+                        pulse_33_weights)
+
+#joins merged file to merged_weights file
+pulse_nc <- merged %>%
+  filter(EST_ST == 37) %>%
+  inner_join(merged_weights, by = "SCRAM")
+
+#sets weights
+pulse_nc_svy <- pulse_nc %>%
+  as_survey(weights = PWEIGHT,
+            repweights = matches("PWEIGHT\\d"),
+            scale = 4/80,
+            rscales = rep(1, 80),
+            mse = TRUE,
+            type = "JK1")
+
+#create new variable names for whether people worked, gender, race, and income
+pulse_nc_svy <- pulse_nc_svy %>% 
+  mutate(work = ANYWORK == 1, #creates T/F variables for whether ppl worked
+         nowork = ANYWORK == 2,
+         no_response_work = ANYWORK == -88 | ANYWORK == -99, #and whether they responded to the Q about why they didn't work
+         gender = case_when( #new plain language gender variable
+           EGENDER == 1 ~ "male",
+           EGENDER == 2 ~ "female"),
+         race = case_when( #new plain language race variable
+           RHISPANIC == 2 ~ "hispanic",
+           RRACE == 1 ~ "white",
+           RRACE == 2 ~ "black"),
+         income = case_when( #new plain language income variable
+           INCOME == 1 ~ "<25000",
+           INCOME == 2 ~ "25000 - 34999",
+           INCOME == 3 ~ "35000 - 49999",
+           INCOME == 4 ~ "50000 - 74999",
+           INCOME == 5 ~ "75000 - 99999",
+           INCOME == 6 ~ "100000 - 149999",
+           INCOME == 7 ~ "150000 - 199999",
+           INCOME == 8 ~ ">200000"
+         )) 
+
+
+work <- pulse_nc_svy %>% #summarizes data for whether people work or not by gender
+  group_by(gender) %>%
+  summarise(n = survey_total(), #srvyr package calculates standard errors
+            nowork = survey_total(nowork),
+            work = survey_total(work),
+            no_response_work = survey_total(no_response_work)) %>%
+  rbind(summarize(pulse_nc_svy, #calculates whether people work for all genders
+                  n = survey_total(),
+                  nowork = survey_total(nowork),
+                  work = survey_total(work),
+                  no_response_work = survey_total(no_response_work)) %>%
+          mutate(gender = "total"))
+
+#creates a dataframe with variable names for all the reasons that people did not work
+reasons <- pulse_nc_svy %>% 
+  filter(ANYWORK == 2) %>% #just uses responses from whether people worked
+  mutate(didnt_want = RSNNOWRKRV == 1, #creates T/F variables for all the reasons ppl didn't work
+         sick_covid = RSNNOWRKRV == 2,
+         care_child = RSNNOWRKRV == 3,
+         care_elder = RSNNOWRKRV == 4,
+         concern = RSNNOWRKRV == 5,
+         sick_disabled = RSNNOWRKRV == 6,
+         retired = RSNNOWRKRV == 7,
+         laid_off = RSNNOWRKRV == 8,
+         temp_close = RSNNOWRKRV == 9,
+         out_of_biz = RSNNOWRKRV == 10,
+         transportation = RSNNOWRKRV == 11,
+         other = RSNNOWRKRV == 12,
+         no_response = RSNNOWRKRV == -88 | RSNNOWRKRV == -99)
+
+#groups respondents by race, then sums each reason for not working
+reasons_with_race <- reasons %>%
+  group_by(race) %>%
+  summarize(reasons_n = survey_total(),
+            didnt_want = survey_total(didnt_want),
+            sick_covid = survey_total(sick_covid),
+            care_child = survey_total(care_child),
+            care_elder = survey_total(care_elder),
+            concern = survey_total(concern),
+            sick_disabled = survey_total(sick_disabled),
+            retired = survey_total(retired),
+            laid_off = survey_total(laid_off),
+            temp_close = survey_total(temp_close),
+            out_of_biz = survey_total(out_of_biz),
+            transportation = survey_total(transportation),
+            other = survey_total(other),
+            no_response = survey_total(no_response)) %>%
+  rbind(summarize(reasons, #adds on reasons for everyone
+                  reasons_n = survey_total(),
+                  didnt_want = survey_total(didnt_want),
+                  sick_covid = survey_total(sick_covid),
+                  care_child = survey_total(care_child),
+                  care_elder = survey_total(care_elder),
+                  concern = survey_total(concern),
+                  sick_disabled = survey_total(sick_disabled),
+                  retired = survey_total(retired),
+                  laid_off = survey_total(laid_off),
+                  temp_close = survey_total(temp_close),
+                  out_of_biz = survey_total(out_of_biz),
+                  transportation = survey_total(transportation),
+                  other = survey_total(other),
+                  no_response = survey_total(no_response)) %>%
+          mutate(race = "total")) 
+
+#groups respondents by income, then sums each reason for not working
+reasons_by_income <- reasons %>%
+  group_by(income) %>%
+  summarize(reasons_n = survey_total(),
+            didnt_want = survey_total(didnt_want),
+            sick_covid = survey_total(sick_covid),
+            care_child = survey_total(care_child),
+            care_elder = survey_total(care_elder),
+            concern = survey_total(concern),
+            sick_disabled = survey_total(sick_disabled),
+            retired = survey_total(retired),
+            laid_off = survey_total(laid_off),
+            temp_close = survey_total(temp_close),
+            out_of_biz = survey_total(out_of_biz),
+            transportation = survey_total(transportation),
+            other = survey_total(other),
+            no_response = survey_total(no_response)) %>%
+  rbind(summarize(reasons, #adds on reasons for everyone
+                  reasons_n = survey_total(),
+                  didnt_want = survey_total(didnt_want),
+                  sick_covid = survey_total(sick_covid),
+                  care_child = survey_total(care_child),
+                  care_elder = survey_total(care_elder),
+                  concern = survey_total(concern),
+                  sick_disabled = survey_total(sick_disabled),
+                  retired = survey_total(retired),
+                  laid_off = survey_total(laid_off),
+                  temp_close = survey_total(temp_close),
+                  out_of_biz = survey_total(out_of_biz),
+                  transportation = survey_total(transportation),
+                  other = survey_total(other),
+                  no_response = survey_total(no_response)) %>%
+          mutate(income = "total"))
+
+
+#groups respondents by gender, then sums each reason for not working
+reasons_by_gender <- reasons %>%
+  group_by(gender) %>% #summarizes reasons by gender
+  summarize(reasons_n = survey_total(),
+            didnt_want = survey_total(didnt_want),
+            sick_covid = survey_total(sick_covid),
+            care_child = survey_total(care_child),
+            care_elder = survey_total(care_elder),
+            concern = survey_total(concern),
+            sick_disabled = survey_total(sick_disabled),
+            retired = survey_total(retired),
+            laid_off = survey_total(laid_off),
+            temp_close = survey_total(temp_close),
+            out_of_biz = survey_total(out_of_biz),
+            transportation = survey_total(transportation),
+            other = survey_total(other),
+            no_response = survey_total(no_response)) %>%
+  rbind(summarize(reasons, #adds on reasons for everyone
+                  reasons_n = survey_total(),
+                  didnt_want = survey_total(didnt_want),
+                  sick_covid = survey_total(sick_covid),
+                  care_child = survey_total(care_child),
+                  care_elder = survey_total(care_elder),
+                  concern = survey_total(concern),
+                  sick_disabled = survey_total(sick_disabled),
+                  retired = survey_total(retired),
+                  laid_off = survey_total(laid_off),
+                  temp_close = survey_total(temp_close),
+                  out_of_biz = survey_total(out_of_biz),
+                  transportation = survey_total(transportation),
+                  other = survey_total(other),
+                  no_response = survey_total(no_response)) %>%
+          mutate(gender = "total"))
